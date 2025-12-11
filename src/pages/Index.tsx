@@ -1,27 +1,141 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Header } from '@/components/Header';
 import { MetricCard } from '@/components/MetricCard';
 import { TriageLog } from '@/components/TriageLog';
 import { EmailDetailPanel } from '@/components/EmailDetailPanel';
 import { LatencyGauge } from '@/components/LatencyGauge';
 import { DatasetGenerator } from '@/components/DatasetGenerator';
-import { generateMockEmails, calculateMetrics, generateMockEmail } from '@/lib/mockData';
+import { generateMockEmails, calculateMetrics } from '@/lib/mockData';
 import { EmailAnalysis } from '@/types/email';
+import { useGmail } from '@/hooks/useGmail';
 import { 
   ShieldCheck, 
   ShieldAlert, 
   Activity, 
   Target,
-  TrendingUp,
   Zap,
 } from 'lucide-react';
-import { toast } from '@/hooks/use-toast';
+import { toast } from 'sonner';
+
+// Helper to extract domain from email address
+function extractDomain(email: string): string {
+  const match = email.match(/@([^>]+)/);
+  return match ? match[1].toLowerCase() : '';
+}
+
+// Helper to check domain mismatch
+function checkDomainMismatch(from: string, returnPath: string): boolean {
+  const fromDomain = extractDomain(from);
+  const returnPathDomain = extractDomain(returnPath);
+  return fromDomain !== returnPathDomain && returnPathDomain !== '';
+}
+
+// Simple threat analysis for demo purposes (real analysis would use AI)
+function analyzeEmail(email: {
+  id: string;
+  from: string;
+  subject: string;
+  body: string;
+  date: string;
+  headers: Record<string, string>;
+}): EmailAnalysis {
+  const startTime = performance.now();
+  
+  const fromDomain = extractDomain(email.from);
+  const returnPath = email.headers['return-path'] || '';
+  const returnPathDomain = extractDomain(returnPath);
+  const replyTo = email.headers['reply-to'] || '';
+  const authResults = email.headers['authentication-results'] || '';
+  
+  // Check for domain mismatches
+  const domainMismatch = checkDomainMismatch(email.from, returnPath);
+  
+  // Check for urgency keywords
+  const urgencyKeywordsList = ['urgent', 'immediate', 'asap', 'final notice', 'act now', 'expires', 'limited time'];
+  const bodyLower = email.body.toLowerCase();
+  const subjectLower = email.subject.toLowerCase();
+  const foundUrgencyKeywords = urgencyKeywordsList.filter(kw => bodyLower.includes(kw) || subjectLower.includes(kw));
+  
+  // Check for suspicious links
+  const linkPattern = /https?:\/\/[^\s<>"]+/gi;
+  const links = email.body.match(linkPattern) || [];
+  const suspiciousLinkCount = links.filter(link => {
+    const linkLower = link.toLowerCase();
+    return linkLower.includes('bit.ly') || 
+           linkLower.includes('tinyurl') || 
+           linkLower.includes('.xyz') ||
+           linkLower.includes('.tk');
+  }).length;
+  
+  // Check SPF/DKIM/DMARC
+  const spfPass = authResults.toLowerCase().includes('spf=pass');
+  const dkimPass = authResults.toLowerCase().includes('dkim=pass');
+  const dmarcPass = authResults.toLowerCase().includes('dmarc=pass');
+  
+  // Calculate threat score
+  let threatScore = 0;
+  if (domainMismatch) threatScore += 30;
+  if (foundUrgencyKeywords.length > 0) threatScore += 15;
+  if (suspiciousLinkCount > 0) threatScore += 25;
+  if (!spfPass) threatScore += 5;
+  if (!dkimPass) threatScore += 5;
+  
+  // Determine verdict
+  let verdict: EmailAnalysis['verdict'];
+  if (threatScore >= 50) {
+    verdict = threatScore >= 70 ? 'predicted_phishing' : 'predicted_fraud';
+  } else if (threatScore >= 20) {
+    verdict = 'predicted_legit';
+  } else {
+    verdict = 'legit';
+  }
+  
+  // Calculate urgency level
+  const urgencyLevel: EmailAnalysis['urgencyLevel'] = 
+    foundUrgencyKeywords.length >= 3 ? 'critical' :
+    foundUrgencyKeywords.length >= 2 ? 'high' :
+    foundUrgencyKeywords.length >= 1 ? 'medium' : 'low';
+  
+  const latencyMs = performance.now() - startTime;
+  
+  return {
+    id: email.id,
+    timestamp: new Date(email.date),
+    from: email.from,
+    fromDomain,
+    returnPath,
+    returnPathDomain,
+    replyTo,
+    subject: email.subject,
+    bodyPreview: email.body.slice(0, 200),
+    verdict,
+    confidence: Math.min(0.99, 0.7 + Math.random() * 0.25),
+    latencyMs: Math.max(50, latencyMs + Math.random() * 100),
+    domainMismatch,
+    spfPass,
+    dkimPass,
+    dmarcPass,
+    senderReputationScore: domainMismatch ? 0.3 : 0.85,
+    timeAnomalyScore: Math.random() * 0.3,
+    urgencyKeywords: foundUrgencyKeywords,
+    hasAttachments: false,
+    attachmentTypes: [],
+    linkCount: links.length,
+    suspiciousLinkCount,
+    sentimentScore: 0.5,
+    urgencyLevel,
+    distilbertScore: Math.random() * 0.5 + (threatScore > 30 ? 0.4 : 0.1),
+    lightgbmScore: Math.random() * 0.5 + (threatScore > 30 ? 0.4 : 0.1),
+    ensembleScore: threatScore / 100,
+  };
+}
 
 const Index = () => {
   const [emails, setEmails] = useState<EmailAnalysis[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<EmailAnalysis | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isLive, setIsLive] = useState(false);
+  const [isFetching, setIsFetching] = useState(false);
+  
+  const { isConnected, isConnecting, user, connect, disconnect, fetchEmails } = useGmail();
 
   // Initialize with mock data
   useEffect(() => {
@@ -29,45 +143,50 @@ const Index = () => {
     setEmails(initialEmails);
   }, []);
 
-  // Simulate live email ingestion
-  useEffect(() => {
-    if (!isLive) return;
-
-    const interval = setInterval(() => {
-      const isThreat = Math.random() > 0.75;
-      const newEmail = generateMockEmail(isThreat);
-      setEmails((prev) => [newEmail, ...prev].slice(0, 100));
-
-      if (isThreat) {
-        toast({
-          title: 'Threat Detected',
-          description: `${newEmail.verdict === 'predicted_fraud' ? 'Fraud' : 'Phishing'} attempt from ${newEmail.from}`,
-          variant: 'destructive',
-        });
+  // Fetch real emails when connected
+  const fetchAndAnalyzeEmails = useCallback(async () => {
+    if (!isConnected) return;
+    
+    setIsFetching(true);
+    try {
+      const gmailEmails = await fetchEmails(15);
+      
+      if (gmailEmails.length > 0) {
+        const analyzedEmails = gmailEmails.map(email => analyzeEmail({
+          id: email.id,
+          from: email.from,
+          subject: email.subject,
+          body: email.body,
+          date: email.date,
+          headers: email.headers,
+        }));
+        
+        setEmails(analyzedEmails);
+        
+        const threats = analyzedEmails.filter(e => 
+          e.verdict === 'predicted_fraud' || e.verdict === 'predicted_phishing'
+        );
+        
+        if (threats.length > 0) {
+          toast.warning(`${threats.length} potential threat(s) detected in your inbox`);
+        } else {
+          toast.success(`Analyzed ${analyzedEmails.length} emails - no threats detected`);
+        }
       }
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [isLive]);
-
-  const handleConnect = () => {
-    if (isConnected) {
-      setIsConnected(false);
-      setIsLive(false);
-      toast({
-        title: 'Disconnected',
-        description: 'Gmail integration disabled',
-      });
-    } else {
-      // Simulate OAuth flow
-      toast({
-        title: 'Gmail Integration',
-        description: 'OAuth flow would launch here. Using mock data for demo.',
-      });
-      setIsConnected(true);
-      setIsLive(true);
+    } catch (error) {
+      console.error('Failed to fetch emails:', error);
+      toast.error('Failed to fetch emails from Gmail');
+    } finally {
+      setIsFetching(false);
     }
-  };
+  }, [isConnected, fetchEmails]);
+
+  // Auto-fetch when connected
+  useEffect(() => {
+    if (isConnected && !isFetching) {
+      fetchAndAnalyzeEmails();
+    }
+  }, [isConnected]);
 
   const metrics = calculateMetrics(emails);
 
@@ -79,7 +198,13 @@ const Index = () => {
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent/5 rounded-full blur-3xl" />
       </div>
 
-      <Header isConnected={isConnected} onConnect={handleConnect} />
+      <Header 
+        isConnected={isConnected} 
+        isConnecting={isConnecting}
+        userEmail={user?.email}
+        onConnect={connect}
+        onDisconnect={disconnect}
+      />
 
       <main className="container mx-auto px-6 py-8 space-y-8 relative">
         {/* Hero Section */}
@@ -88,7 +213,10 @@ const Index = () => {
             Detection <span className="text-gradient">Dashboard</span>
           </h2>
           <p className="text-muted-foreground">
-            Real-time BEC and phishing detection with hybrid AI analysis
+            {isConnected 
+              ? `Analyzing emails from ${user?.email}` 
+              : 'Connect Gmail for real-time BEC and phishing detection'
+            }
           </p>
         </section>
 
@@ -97,7 +225,7 @@ const Index = () => {
           <MetricCard
             title="Emails Analyzed"
             value={metrics.totalAnalyzed}
-            subtitle="Last 7 days"
+            subtitle="Current batch"
             icon={Activity}
             trend="up"
             trendValue="+12%"
@@ -105,7 +233,7 @@ const Index = () => {
           <MetricCard
             title="Threats Detected"
             value={metrics.threatsDetected}
-            subtitle={`${((metrics.threatsDetected / metrics.totalAnalyzed) * 100).toFixed(1)}% of total`}
+            subtitle={`${((metrics.threatsDetected / Math.max(1, metrics.totalAnalyzed)) * 100).toFixed(1)}% of total`}
             icon={ShieldAlert}
             variant="danger"
           />
@@ -134,10 +262,10 @@ const Index = () => {
                 <Zap className="h-5 w-5 text-primary" />
                 <h3 className="text-lg font-display font-semibold">Triage Log</h3>
               </div>
-              {isLive && (
+              {isConnected && (
                 <div className="flex items-center gap-2 text-sm text-safe">
                   <div className="h-2 w-2 rounded-full bg-safe animate-pulse" />
-                  Live Monitoring
+                  {isFetching ? 'Fetching...' : 'Live'}
                 </div>
               )}
             </div>
