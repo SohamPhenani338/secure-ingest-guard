@@ -1,13 +1,15 @@
-import { Shield, Activity, Database, Settings, Mail } from 'lucide-react';
+import { Shield, Mail, LogOut, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 
 interface HeaderProps {
   isConnected: boolean;
+  isConnecting: boolean;
+  userEmail?: string;
   onConnect: () => void;
+  onDisconnect: () => void;
 }
 
-export function Header({ isConnected, onConnect }: HeaderProps) {
+export function Header({ isConnected, isConnecting, userEmail, onConnect, onDisconnect }: HeaderProps) {
   return (
     <header className="border-b border-border/50 bg-card/50 backdrop-blur-sm sticky top-0 z-50">
       <div className="container mx-auto px-6 py-4">
@@ -44,20 +46,36 @@ export function Header({ isConnected, onConnect }: HeaderProps) {
           {/* Actions */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/50 border border-border/50">
-              <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-safe animate-pulse' : 'bg-muted-foreground'}`} />
-              <span className="text-xs font-medium">
-                {isConnected ? 'Gmail Connected' : 'Disconnected'}
+              <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-safe animate-pulse' : isConnecting ? 'bg-warning animate-pulse' : 'bg-muted-foreground'}`} />
+              <span className="text-xs font-medium truncate max-w-[150px]">
+                {isConnected ? userEmail || 'Connected' : isConnecting ? 'Connecting...' : 'Disconnected'}
               </span>
             </div>
             
-            <Button 
-              variant={isConnected ? 'outline' : 'glow'} 
-              size="sm"
-              onClick={onConnect}
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              {isConnected ? 'Connected' : 'Connect Gmail'}
-            </Button>
+            {isConnected ? (
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={onDisconnect}
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Disconnect
+              </Button>
+            ) : (
+              <Button 
+                variant="glow" 
+                size="sm"
+                onClick={onConnect}
+                disabled={isConnecting}
+              >
+                {isConnecting ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Mail className="h-4 w-4 mr-2" />
+                )}
+                {isConnecting ? 'Connecting...' : 'Connect Gmail'}
+              </Button>
+            )}
           </div>
         </div>
       </div>
